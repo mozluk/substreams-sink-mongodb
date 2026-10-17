@@ -6,8 +6,8 @@ import (
 
 	"github.com/streamingfast/bstream"
 	pbdatabase "github.com/streamingfast/substreams-sink-mongodb/pb/substreams/sink/database/v1"
-	pbsubstreamsrpc "github.com/streamingfast/substreams/pb/sf/substreams/rpc/v2"
 	"github.com/streamingfast/substreams-sink-mongodb/mongo"
+	pbsubstreamsrpc "github.com/streamingfast/substreams/pb/sf/substreams/rpc/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +38,7 @@ func TestHandleBlockScopedData_NilGuards(t *testing.T) {
 	require.Contains(t, err.Error(), "received block scoped data without a clock")
 }
 
-func TestApplyDatabaseChanges_NullFieldMismatch(t *testing.T) {
+func TestApplyDatabaseChanges_NullFieldValidation(t *testing.T) {
 	s := &MongoSinker{
 		tables: mongo.Tables{
 			"test_table": {
@@ -47,25 +47,137 @@ func TestApplyDatabaseChanges_NullFieldMismatch(t *testing.T) {
 		},
 	}
 
-	changes := &pbdatabase.DatabaseChanges{
-		TableChanges: []*pbdatabase.TableChange{
-			{
-				Table:     "test_table",
-				Pk:        "1",
-				Operation: pbdatabase.TableChange_CREATE,
-				Fields: []*pbdatabase.Field{
-					{
-						Name:     "null_field",
-						NewValue: "non-empty-value",
+	t.Run("null field mismatch error", func(t *testing.T) {
+		changes := &pbdatabase.DatabaseChanges{
+			TableChanges: []*pbdatabase.TableChange{
+				{
+					Table:     "test_table",
+					Pk:        "1",
+					Operation: pbdatabase.TableChange_CREATE,
+					Fields: []*pbdatabase.Field{
+						{
+							Name:     "null_field",
+							NewValue: "non-empty-value",
+						},
 					},
 				},
 			},
-		},
-	}
+		}
 
-	err := s.applyDatabaseChanges(context.Background(), bstream.BlockRefEmpty, changes)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "is typed as null but carries value")
+		err := s.applyDatabaseChanges(context.Background(), bstream.BlockRefEmpty, changes)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "is typed as null but carries value")
+	})
+
+	t.Run("null field happy path success parsing", func(t *testing.T) {
+		changes := &pbdatabase.DatabaseChanges{
+			TableChanges: []*pbdatabase.TableChange{
+				{
+					Table:     "test_table",
+					Pk:        "2",
+					Operation: pbdatabase.TableChange_CREATE,
+					Fields: []*pbdatabase.Field{
+						{
+							Name:     "null_field",
+							NewValue: "",
+						},
+					},
+				},
+			},
+		}
+
+		// Validates that empty value for NULL typed field passes validation phase
+		// and reaches loader step (panics due to nil loader, confirming parsing passed).
+		require.Panics(t, func() {
+			_ = s.applyDatabaseChanges(context.Background(), bstream.BlockRefEmpty, changes)
+		})
+	})
+}
+
+func TestApplyDatabaseChanges_FieldTypeParsingErrors(t *testing.T) {
+	t.Run("invalid integer parsing", func(t *testing.T) {
+		s := &MongoSinker{
+			tables: mongo.Tables{
+				"test_table": {
+					"int_field": mongo.INTEGER,
+				},
+			},
+		}
+		changes := &pbdatabase.DatabaseChanges{
+			TableChanges: []*pbdatabase.TableChange{
+				{
+					Table:     "test_table",
+					Pk:        "1",
+					Operation: pbdatabase.TableChange_CREATE,
+					Fields: []*pbdatabase.Field{
+						{
+							Name:     "int_field",
+							NewValue: "not-an-integer",
+						},
+					},
+				},
+			},
+		}
+		err := s.applyDatabaseChanges(context.Background(), bstream.BlockRefEmpty, changes)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "strconv.ParseInt")
+	})
+
+	t.Run("invalid double parsing", func(t *testing.T) {
+		s := &MongoSinker{
+			tables: mongo.Tables{
+				"test_table": {
+					"double_field": mongo.DOUBLE,
+				},
+			},
+		}
+		changes := &pbdatabase.DatabaseChanges{
+			TableChanges: []*pbdatabase.TableChange{
+				{
+					Table:     "test_table",
+					Pk:        "1",
+					Operation: pbdatabase.TableChange_CREATE,
+					Fields: []*pbdatabase.Field{
+						{
+							Name:     "double_field",
+							NewValue: "not-a-double",
+						},
+					},
+				},
+			},
+		}
+		err := s.applyDatabaseChanges(context.Background(), bstream.BlockRefEmpty, changes)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "strconv.ParseFloat")
+	})
+
+	t.Run("invalid boolean parsing", func(t *testing.T) {
+		s := &MongoSinker{
+			tables: mongo.Tables{
+				"test_table": {
+					"bool_field": mongo.BOOLEAN,
+				},
+			},
+		}
+		changes := &pbdatabase.DatabaseChanges{
+			TableChanges: []*pbdatabase.TableChange{
+				{
+					Table:     "test_table",
+					Pk:        "1",
+					Operation: pbdatabase.TableChange_CREATE,
+					Fields: []*pbdatabase.Field{
+						{
+							Name:     "bool_field",
+							NewValue: "not-a-boolean",
+						},
+					},
+				},
+			},
+		}
+		err := s.applyDatabaseChanges(context.Background(), bstream.BlockRefEmpty, changes)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "strconv.ParseBool")
+	})
 }
 
 func TestApplyDatabaseChanges_DateParsing(t *testing.T) {
@@ -96,7 +208,6 @@ func TestApplyDatabaseChanges_DateParsing(t *testing.T) {
 
 		err := s.applyDatabaseChanges(context.Background(), bstream.BlockRefEmpty, changes)
 		require.Error(t, err)
-		// The error should come directly from the time.Parse function
 		require.Contains(t, err.Error(), "parsing time")
 	})
 
@@ -117,9 +228,8 @@ func TestApplyDatabaseChanges_DateParsing(t *testing.T) {
 			},
 		}
 
-		// When a valid date is parsed, the code will proceed to the next stage: s.loader.Save().
-		// Since we haven't initialized a fully mocked Loader in the test environment, this will cause a nil panic.
-		// By catching the panic, we verify that the "time.Parse" step was passed successfully without errors.
+		// Validates that valid RFC3339 date parsing succeeds without returning an error
+		// prior to reaching s.loader.Save().
 		require.Panics(t, func() {
 			_ = s.applyDatabaseChanges(context.Background(), bstream.BlockRefEmpty, changes)
 		})
