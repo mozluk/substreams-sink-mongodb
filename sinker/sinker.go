@@ -162,7 +162,7 @@ func (s *MongoSinker) HandleBlockScopedData(ctx context.Context, data *pbsubstre
 }
 
 func (s *MongoSinker) HandleBlockUndoSignal(ctx context.Context, data *pbsubstreamsrpc.BlockUndoSignal, cursor *sink.Cursor) error {
-	return fmt.Errorf("received undo signal but there is no handling of undo, this is because you used `--undo-buffer-size=0` which is invalid right now")
+	return fmt.Errorf("received undo signal but there is no handling of undo, this is because you used `--undo-browser-size=0` which is invalid right now")
 }
 
 func (s *MongoSinker) applyDatabaseChanges(ctx context.Context, block bstream.BlockRef, databaseChanges *pbdatabase.DatabaseChanges) (err error) {
